@@ -99,7 +99,7 @@
 
 ## 9. 数据集差异处理（SUSTech1K vs AIST/AMASS，蒸馏必做）
 
-你的问题很关键：**需要做数据处理，而且是蒸馏是否有效的决定性步骤**。因为 SUSTech1K（真实监控步态）与 AIST/AMASS（动作/MoCap分布）存在显著域差。
+**需要做数据处理，而且是蒸馏是否有效的决定性步骤**。因为 SUSTech1K（真实监控步态）与 AIST/AMASS（动作/MoCap分布）存在显著域差。
 
 ### 9.1 关节拓扑统一（必须）
 - 统一到 SkeletonGait++ 当前使用的关节定义（如 COCO17 / OpenPose18 / 自定义J点）。
@@ -180,7 +180,7 @@
   - 输入：骨架序列（保持原流程）
   - 监督：ID损失 + 来自 SUSTech1K teacher cache 的蒸馏损失
 
-### 10.3 一句话流程
+### 10.3 流程
 
 `AIST/AMASS -> 训练更稳的RobustCap -> 对SUSTech1K离线导出teacher cache -> 蒸馏训练SkeletonGait++(SUSTech1K)`
 
@@ -189,7 +189,7 @@
 - Week2：接入 `L_feat` + `L_motion`，完成主实验。
 - Week3：关系蒸馏 + 消融 + 最优配置导出。
 
-## 12. 你可以直接执行的落地清单
+## 12. 可以直接执行的落地清单
 1. 选定一个目标集（你当前是 SUSTech1K，建议先做 5% 子集冒烟）。
 2. 跑 RobustCap 离线导出 `T_global/T_motion`。
 3. 在 SkeletonGait++ 上先只加 `L_feat`，确认稳定收敛。
