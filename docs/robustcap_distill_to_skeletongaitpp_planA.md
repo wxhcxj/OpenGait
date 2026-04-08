@@ -29,11 +29,12 @@
 3. 计算识别主损失 + 蒸馏损失并联合优化。
 
 ## 4. 蒸馏损失配方（方案A核心）
-设总损失：
+设总损失（中文直译）：
 
-\[
-\mathcal{L}=\mathcal{L}_{id}+\lambda_1\mathcal{L}_{feat}+\lambda_2\mathcal{L}_{motion}+\lambda_3\mathcal{L}_{rel}
-\]
+- **总损失 = 识别损失 + λ1×特征蒸馏损失 + λ2×运动蒸馏损失 + λ3×关系蒸馏损失**
+- 对应公式写法：`L_total = L_id + λ1*L_feat + λ2*L_motion + λ3*L_rel`
+
+> 说明：考虑到部分 Markdown 预览器不支持 LaTeX 渲染，上面同时给出纯文本公式，避免出现“公式未翻译/显示原始符号”的问题。
 
 - `L_id`：SkeletonGait++ 原有识别损失（如 triplet + softmax）。
 - `L_feat`（特征蒸馏）：
@@ -196,5 +197,3 @@
 5. 最后加 `L_rel` 做检索排序微调。
 
 ---
-
-如果你愿意，我可以下一步给你 **“方案A 的代码改造清单（精确到 OpenGait 文件级别 + 伪代码 patch）”**，你可以直接按 checklist 开发。
