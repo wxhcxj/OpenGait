@@ -43,16 +43,23 @@ class SkeletonGaitPP(BaseModel):
        self.distill_cfg = self.cfgs.get('distill_cfg', {})
        self.distill_enable = bool(self.distill_cfg.get('enable', False))
        self.teacher_global_dim = int(self.distill_cfg.get('teacher_global_dim', 102))
+        # selectable terms: feat (T_global), motion (T_motion), pose (T_pose3d)
+       self.distill_terms = set(self.distill_cfg.get('use_terms', ['feat']))
        self.strict_teacher = bool(self.distill_cfg.get('strict_teacher', False))
        self._distill_warned = False
        loss_cfg = self.cfgs.get('loss_cfg', [])
        if isinstance(loss_cfg, dict):
            loss_cfg = [loss_cfg]
-       self.distill_loss_registered = any(
-           isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_feat'
-           for cfg in loss_cfg
+       self.distill_loss_registered = {
+           'feat': any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_feat' for cfg in loss_cfg),
+           'motion': any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_motion' for cfg in loss_cfg),
+           'pose': any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_pose' for cfg in loss_cfg),
+       }
+       self.use_any_distill = self.distill_enable and any(
+           term in self.distill_terms and self.distill_loss_registered.get(term, False)
+           for term in ['feat', 'motion', 'pose']
        )
-       if self.distill_enable and self.distill_loss_registered:
+       if self.use_any_distill:
            self.distill_proj = nn.Linear(128 * C * 16, self.teacher_global_dim)
 
        self.TP = PackSequenceWrapper(torch.max)
@@ -60,17 +67,28 @@ class SkeletonGaitPP(BaseModel):
 
    def _load_teacher_global(self, batch_size, device):
        teacher_feat = torch.zeros(batch_size, self.teacher_global_dim, device=device, dtype=torch.float32)
+       teacher_motion = torch.zeros(batch_size, self.teacher_global_dim, device=device, dtype=torch.float32)
+       teacher_pose = torch.zeros(batch_size, self.teacher_global_dim, device=device, dtype=torch.float32)
        teacher_mask = torch.zeros(batch_size, device=device, dtype=torch.float32)
 
        extras = getattr(self, 'batch_extras', [])
        if len(extras) == 0:
-           return teacher_feat, teacher_mask
+           return teacher_feat, teacher_motion, teacher_pose, teacher_mask
        extra = extras[0]
        if not isinstance(extra, dict):
-           return teacher_feat, teacher_mask
+           return teacher_feat, teacher_motion, teacher_pose, teacher_mask
        paths = extra.get('teacher_cache_paths', None)
        if paths is None:
-           return teacher_feat, teacher_mask
+           return teacher_feat, teacher_motion, teacher_pose, teacher_mask
+
+       def summary_vec(arr):
+           arr = np.asarray(arr, dtype=np.float32)
+           if arr.ndim < 2:
+               return None
+           t_mean = arr.mean(axis=0).reshape(-1)
+           t_std = arr.std(axis=0).reshape(-1)
+           vec = np.concatenate([t_mean, t_std], axis=0).astype(np.float32)
+           return vec if vec.shape[0] == self.teacher_global_dim else None
 
        for i, pth in enumerate(paths):
            if i >= batch_size or pth is None:
@@ -78,12 +96,18 @@ class SkeletonGaitPP(BaseModel):
            try:
                data = np.load(pth, allow_pickle=True)
                t_global = np.asarray(data['T_global'], dtype=np.float32).reshape(-1)
+               t_motion = summary_vec(data['T_motion']) if 'T_motion' in data else None
+               t_pose = summary_vec(data['T_pose3d']) if 'T_pose3d' in data else None
                if t_global.shape[0] == self.teacher_global_dim:
                    teacher_feat[i] = torch.from_numpy(t_global).to(device=device)
+                   if t_motion is not None:
+                       teacher_motion[i] = torch.from_numpy(t_motion).to(device=device)
+                   if t_pose is not None:
+                       teacher_pose[i] = torch.from_numpy(t_pose).to(device=device)
                    teacher_mask[i] = 1.0
            except Exception:
                continue
-       return teacher_feat, teacher_mask
+       return teacher_feat, teacher_motion, teacher_pose, teacher_mask
 
    def make_layer(self, block, planes, stride, blocks_num, mode='2d'):
 
@@ -172,9 +196,9 @@ class SkeletonGaitPP(BaseModel):
                'embeddings': embed
            }
        }
-       if self.distill_enable and self.distill_loss_registered:
+       if self.use_any_distill:
            student_global = self.distill_proj(embed_1.reshape(n, -1))
-           teacher_global, teacher_mask = self._load_teacher_global(n, student_global.device)
+           teacher_global, teacher_motion, teacher_pose, teacher_mask = self._load_teacher_global(n, student_global.device)
            valid_ratio = teacher_mask.mean()
            if self.training and valid_ratio.item() <= 0:
                if self.strict_teacher:
@@ -187,11 +211,24 @@ class SkeletonGaitPP(BaseModel):
                        "distill_valid_ratio is 0 in current batch. distill loss will be 0. "
                        "Please verify teacher_index key format and cache paths.")
                    self._distill_warned = True
-           retval['training_feat']['distill_feat'] = {
-               'student_feat': student_global,
-               'teacher_feat': teacher_global,
-               'mask': teacher_mask
-           }
+           if 'feat' in self.distill_terms and self.distill_loss_registered.get('feat', False):
+               retval['training_feat']['distill_feat'] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_global,
+                   'mask': teacher_mask
+               }
+           if 'motion' in self.distill_terms and self.distill_loss_registered.get('motion', False):
+               retval['training_feat']['distill_motion'] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_motion,
+                   'mask': teacher_mask
+               }
+           if 'pose' in self.distill_terms and self.distill_loss_registered.get('pose', False):
+               retval['training_feat']['distill_pose'] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_pose,
+                   'mask': teacher_mask
+               }
            retval['training_feat']['distill_valid_ratio'] = valid_ratio
        return retval
 
