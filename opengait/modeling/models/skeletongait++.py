@@ -40,8 +40,50 @@ class SkeletonGaitPP(BaseModel):
        self.FCs = SeparateFCs(16, 256*C, 128*C)
        self.BNNecks = SeparateBNNecks(16, 128*C, class_num=model_cfg['SeparateBNNecks']['class_num'])
 
+       self.distill_cfg = self.cfgs.get('distill_cfg', {})
+       self.distill_enable = bool(self.distill_cfg.get('enable', False))
+       self.teacher_global_dim = int(self.distill_cfg.get('teacher_global_dim', 102))
+       self.strict_teacher = bool(self.distill_cfg.get('strict_teacher', False))
+       self._distill_warned = False
+       loss_cfg = self.cfgs.get('loss_cfg', [])
+       if isinstance(loss_cfg, dict):
+           loss_cfg = [loss_cfg]
+       self.distill_loss_registered = any(
+           isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_feat'
+           for cfg in loss_cfg
+       )
+       if self.distill_enable and self.distill_loss_registered:
+           self.distill_proj = nn.Linear(128 * C * 16, self.teacher_global_dim)
+
        self.TP = PackSequenceWrapper(torch.max)
        self.HPP = HorizontalPoolingPyramid(bin_num=[16])
+
+   def _load_teacher_global(self, batch_size, device):
+       teacher_feat = torch.zeros(batch_size, self.teacher_global_dim, device=device, dtype=torch.float32)
+       teacher_mask = torch.zeros(batch_size, device=device, dtype=torch.float32)
+
+       extras = getattr(self, 'batch_extras', [])
+       if len(extras) == 0:
+           return teacher_feat, teacher_mask
+       extra = extras[0]
+       if not isinstance(extra, dict):
+           return teacher_feat, teacher_mask
+       paths = extra.get('teacher_cache_paths', None)
+       if paths is None:
+           return teacher_feat, teacher_mask
+
+       for i, pth in enumerate(paths):
+           if i >= batch_size or pth is None:
+               continue
+           try:
+               data = np.load(pth, allow_pickle=True)
+               t_global = np.asarray(data['T_global'], dtype=np.float32).reshape(-1)
+               if t_global.shape[0] == self.teacher_global_dim:
+                   teacher_feat[i] = torch.from_numpy(t_global).to(device=device)
+                   teacher_mask[i] = 1.0
+           except Exception:
+               continue
+       return teacher_feat, teacher_mask
 
    def make_layer(self, block, planes, stride, blocks_num, mode='2d'):
 
@@ -79,7 +121,7 @@ class SkeletonGaitPP(BaseModel):
                pose = pose[..., cutting:-cutting]
            cat_data = np.concatenate([pose, sil], axis=1) # [T, 3, H, W]
            new_data_list.append(cat_data)
-       new_inputs = [[new_data_list], inputs[1], inputs[2], inputs[3], inputs[4]]
+       new_inputs = [[new_data_list], inputs[1], inputs[2], inputs[3], inputs[4], *inputs[5:]]
        return super().inputs_pretreament(new_inputs)
 
    def forward(self, inputs):
@@ -130,6 +172,27 @@ class SkeletonGaitPP(BaseModel):
                'embeddings': embed
            }
        }
+       if self.distill_enable and self.distill_loss_registered:
+           student_global = self.distill_proj(embed_1.reshape(n, -1))
+           teacher_global, teacher_mask = self._load_teacher_global(n, student_global.device)
+           valid_ratio = teacher_mask.mean()
+           if self.training and valid_ratio.item() <= 0:
+               if self.strict_teacher:
+                   raise RuntimeError(
+                       "No valid teacher features in current batch (distill_valid_ratio=0). "
+                       "Please check teacher_index keys and teacher_cache_root."
+                   )
+               if not self._distill_warned:
+                   self.msg_mgr.log_warning(
+                       "distill_valid_ratio is 0 in current batch. distill loss will be 0. "
+                       "Please verify teacher_index key format and cache paths.")
+                   self._distill_warned = True
+           retval['training_feat']['distill_feat'] = {
+               'student_feat': student_global,
+               'teacher_feat': teacher_global,
+               'mask': teacher_mask
+           }
+           retval['training_feat']['distill_valid_ratio'] = valid_ratio
        return retval
 
 class AttentionFusion(nn.Module): 

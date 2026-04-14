@@ -13,6 +13,10 @@ class DataSet(tordata.Dataset):
                             a certain gait sequence presented as [label, type, view, paths];
         """
         self.__dataset_parser(data_cfg, training)
+        self.teacher_cache_root = data_cfg.get('teacher_cache_root', None)
+        self.teacher_index_path = data_cfg.get('teacher_index', None)
+        self.teacher_index = self.__load_teacher_index(
+            self.teacher_index_path) if self.teacher_index_path else {}
         self.cache = data_cfg['cache']
         self.label_list = [seq_info[0] for seq_info in self.seqs_info]
         self.types_list = [seq_info[1] for seq_info in self.seqs_info]
@@ -60,7 +64,11 @@ class DataSet(tordata.Dataset):
         else:
             data_list = self.seqs_data[idx]
         seq_info = self.seqs_info[idx]
-        return data_list, seq_info
+        ret_seq_info = [seq_info[0], seq_info[1], seq_info[2]]
+        if self.teacher_index:
+            ret_seq_info.append(self.__get_teacher_cache_path(seq_info))
+        ret_seq_info.append(seq_info[-1])
+        return data_list, ret_seq_info
 
     def __load_all_data(self):
         for idx in range(len(self)):
@@ -123,3 +131,20 @@ class DataSet(tordata.Dataset):
 
         self.seqs_info = get_seqs_info_list(
             train_set) if training else get_seqs_info_list(test_set)
+
+    def __load_teacher_index(self, index_path):
+        if not osp.exists(index_path):
+            raise FileNotFoundError(
+                "teacher_index not found: {}".format(index_path))
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+        return index
+
+    def __get_teacher_cache_path(self, seq_info):
+        if self.teacher_cache_root is None:
+            return None
+        key = "{}/{}/{}".format(seq_info[0], seq_info[1], seq_info[2])
+        rel_path = self.teacher_index.get(key, None)
+        if rel_path is None:
+            return None
+        return osp.join(self.teacher_cache_root, rel_path)

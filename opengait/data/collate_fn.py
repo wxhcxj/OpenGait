@@ -41,12 +41,15 @@ class CollateFn(object):
         # currently, the functionality of feature_num is not fully supported yet, it refers to 1 now. We are supposed to make our framework support multiple source of input data, such as silhouette, or skeleton.
         feature_num = len(batch[0][0])
         seqs_batch, labs_batch, typs_batch, vies_batch = [], [], [], []
+        teacher_paths_batch = []
 
         for bt in batch:
             seqs_batch.append(bt[0])
             labs_batch.append(self.label_set.index(bt[1][0]))
             typs_batch.append(bt[1][1])
             vies_batch.append(bt[1][2])
+            teacher_cache_path = bt[1][3] if len(bt[1]) >= 5 else None
+            teacher_paths_batch.append(teacher_cache_path)
 
         global count
         count = 0
@@ -130,4 +133,6 @@ class CollateFn(object):
             batch[-1] = np.asarray(seqL_batch)
 
         batch[0] = fras_batch
+        if any(p is not None for p in teacher_paths_batch):
+            batch.append({'teacher_cache_paths': teacher_paths_batch})
         return batch

@@ -301,7 +301,10 @@ class BaseModel(MetaModel, nn.Module):
         Returns:
             tuple: training data including inputs, labels, and some meta data.
         """
-        seqs_batch, labs_batch, typs_batch, vies_batch, seqL_batch = inputs
+        if len(inputs) < 5:
+            raise ValueError("Expect at least 5 elements in batch inputs, but got {}.".format(len(inputs)))
+        seqs_batch, labs_batch, typs_batch, vies_batch, seqL_batch = inputs[:5]
+        self.batch_extras = inputs[5:] if len(inputs) > 5 else []
         seq_trfs = self.trainer_trfs if self.training else self.evaluator_trfs
         if len(seqs_batch) != len(seq_trfs):
             raise ValueError(
