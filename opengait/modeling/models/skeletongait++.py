@@ -59,6 +59,11 @@ class SkeletonGaitPP(BaseModel):
            term in self.distill_terms and self.distill_loss_registered.get(term, False)
            for term in ['feat', 'motion', 'pose']
        )
+       if self.distill_enable and (not self.use_any_distill):
+           self.msg_mgr.log_warning(
+               "distill_cfg.enable=True but no active distill term is both selected and registered in loss_cfg. "
+               "selected use_terms={}, registered={}".format(
+                   sorted(list(self.distill_terms)), self.distill_loss_registered))
        if self.use_any_distill:
            self.distill_proj = nn.Linear(128 * C * 16, self.teacher_global_dim)
 
