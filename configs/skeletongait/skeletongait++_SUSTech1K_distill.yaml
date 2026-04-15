@@ -19,7 +19,7 @@ data_cfg:
 distill_cfg:
   enable: true
   teacher_source: robustcap_cache
-  use_terms: [feat]          # selectable: feat / motion / pose, e.g. [feat, motion]
+  use_terms: [feat, motion, pose]  # selectable: feat / motion / pose
   teacher_global_dim: 102
   strict_teacher: false      # set true to raise error when a batch has no valid teacher cache
   lambda_feat: 1.0
