@@ -43,27 +43,37 @@ class SkeletonGaitPP(BaseModel):
        self.distill_cfg = self.cfgs.get('distill_cfg', {})
        self.distill_enable = bool(self.distill_cfg.get('enable', False))
        self.teacher_global_dim = int(self.distill_cfg.get('teacher_global_dim', 102))
-        # selectable terms: feat (T_global), motion (T_motion), pose (T_pose3d)
-       self.distill_terms = set(self.distill_cfg.get('use_terms', ['feat']))
+        # selectable terms: global (T_global), motion (T_motion), pose (T_pose3d)
+       raw_terms = set(self.distill_cfg.get('use_terms', ['global']))
+       self.distill_terms = set(['global' if t == 'feat' else t for t in raw_terms])
+       if 'feat' in raw_terms:
+           self.msg_mgr.log_warning(
+               "distill_cfg.use_terms contains deprecated term 'feat'; "
+               "please rename it to 'global'.")
        self.strict_teacher = bool(self.distill_cfg.get('strict_teacher', False))
        self._distill_warned = False
        loss_cfg = self.cfgs.get('loss_cfg', [])
        if isinstance(loss_cfg, dict):
            loss_cfg = [loss_cfg]
-       self.distill_loss_registered = {
-           'feat': any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_feat' for cfg in loss_cfg),
-           'motion': any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_motion' for cfg in loss_cfg),
-           'pose': any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_pose' for cfg in loss_cfg),
+       global_prefix = None
+       if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_global' for cfg in loss_cfg):
+           global_prefix = 'distill_global'
+       elif any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_feat' for cfg in loss_cfg):
+           global_prefix = 'distill_feat'
+       self.distill_loss_prefix = {
+           'global': global_prefix,
+           'motion': 'distill_motion' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_motion' for cfg in loss_cfg) else None,
+           'pose': 'distill_pose' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_pose' for cfg in loss_cfg) else None,
        }
        self.use_any_distill = self.distill_enable and any(
-           term in self.distill_terms and self.distill_loss_registered.get(term, False)
-           for term in ['feat', 'motion', 'pose']
+           term in self.distill_terms and self.distill_loss_prefix.get(term, None) is not None
+           for term in ['global', 'motion', 'pose']
        )
        if self.distill_enable and (not self.use_any_distill):
            self.msg_mgr.log_warning(
                "distill_cfg.enable=True but no active distill term is both selected and registered in loss_cfg. "
                "selected use_terms={}, registered={}".format(
-                   sorted(list(self.distill_terms)), self.distill_loss_registered))
+                   sorted(list(self.distill_terms)), self.distill_loss_prefix))
        if self.use_any_distill:
            self.distill_proj = nn.Linear(128 * C * 16, self.teacher_global_dim)
 
@@ -217,23 +227,23 @@ class SkeletonGaitPP(BaseModel):
                        "Please verify teacher_index key format and cache paths.")
                    self._distill_warned = True
            zero_mask = torch.zeros_like(teacher_mask)
-           if self.distill_loss_registered.get('feat', False):
-               feat_active = 'feat' in self.distill_terms
-               retval['training_feat']['distill_feat'] = {
+           if self.distill_loss_prefix.get('global', None) is not None:
+               global_active = 'global' in self.distill_terms
+               retval['training_feat'][self.distill_loss_prefix['global']] = {
                    'student_feat': student_global,
-                   'teacher_feat': teacher_global if feat_active else torch.zeros_like(student_global),
-                   'mask': teacher_mask if feat_active else zero_mask
+                   'teacher_feat': teacher_global if global_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if global_active else zero_mask
                }
-           if self.distill_loss_registered.get('motion', False):
+           if self.distill_loss_prefix.get('motion', None) is not None:
                motion_active = 'motion' in self.distill_terms
-               retval['training_feat']['distill_motion'] = {
+               retval['training_feat'][self.distill_loss_prefix['motion']] = {
                    'student_feat': student_global,
                    'teacher_feat': teacher_motion if motion_active else torch.zeros_like(student_global),
                    'mask': teacher_mask if motion_active else zero_mask
                }
-           if self.distill_loss_registered.get('pose', False):
+           if self.distill_loss_prefix.get('pose', None) is not None:
                pose_active = 'pose' in self.distill_terms
-               retval['training_feat']['distill_pose'] = {
+               retval['training_feat'][self.distill_loss_prefix['pose']] = {
                    'student_feat': student_global,
                    'teacher_feat': teacher_pose if pose_active else torch.zeros_like(student_global),
                    'mask': teacher_mask if pose_active else zero_mask

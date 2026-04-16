@@ -19,7 +19,7 @@ data_cfg:
 distill_cfg:
   enable: true
   teacher_source: robustcap_cache
-  use_terms: [feat, motion, pose]  # selectable: feat / motion / pose
+  use_terms: [global, motion, pose]  # selectable: global / motion / pose
   teacher_global_dim: 102
   strict_teacher: false      # set true to raise error when a batch has no valid teacher cache
   lambda_feat: 1.0
@@ -56,7 +56,7 @@ loss_cfg:
     type: FeatureDistillLoss
     mode: mse
     normalize: true
-    log_prefix: distill_feat
+    log_prefix: distill_global
   - loss_term_weight: 1.0
     type: FeatureDistillLoss
     mode: mse
