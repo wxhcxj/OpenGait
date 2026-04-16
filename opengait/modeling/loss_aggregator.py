@@ -91,9 +91,13 @@ class LossAggregator(nn.Module):
                 elif is_tensor(v):
                     _ = v.mean()
                     loss_info['scalar/%s' % k] = _
-                    loss_sum += _
-                    get_msg_mgr().log_debug(
-                        "Please check whether %s needed in training." % k)
+                    if k.endswith('_ratio'):
+                        get_msg_mgr().log_debug(
+                            "Skip adding metric key %s into loss_sum." % k)
+                    else:
+                        loss_sum += _
+                        get_msg_mgr().log_debug(
+                            "Please check whether %s needed in training." % k)
                 else:
                     raise ValueError(
                         "Error type for -Trainng-Feat-, supported: A feature dict or loss tensor.")

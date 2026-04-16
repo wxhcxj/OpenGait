@@ -216,23 +216,27 @@ class SkeletonGaitPP(BaseModel):
                        "distill_valid_ratio is 0 in current batch. distill loss will be 0. "
                        "Please verify teacher_index key format and cache paths.")
                    self._distill_warned = True
-           if 'feat' in self.distill_terms and self.distill_loss_registered.get('feat', False):
+           zero_mask = torch.zeros_like(teacher_mask)
+           if self.distill_loss_registered.get('feat', False):
+               feat_active = 'feat' in self.distill_terms
                retval['training_feat']['distill_feat'] = {
                    'student_feat': student_global,
-                   'teacher_feat': teacher_global,
-                   'mask': teacher_mask
+                   'teacher_feat': teacher_global if feat_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if feat_active else zero_mask
                }
-           if 'motion' in self.distill_terms and self.distill_loss_registered.get('motion', False):
+           if self.distill_loss_registered.get('motion', False):
+               motion_active = 'motion' in self.distill_terms
                retval['training_feat']['distill_motion'] = {
                    'student_feat': student_global,
-                   'teacher_feat': teacher_motion,
-                   'mask': teacher_mask
+                   'teacher_feat': teacher_motion if motion_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if motion_active else zero_mask
                }
-           if 'pose' in self.distill_terms and self.distill_loss_registered.get('pose', False):
+           if self.distill_loss_registered.get('pose', False):
+               pose_active = 'pose' in self.distill_terms
                retval['training_feat']['distill_pose'] = {
                    'student_feat': student_global,
-                   'teacher_feat': teacher_pose,
-                   'mask': teacher_mask
+                   'teacher_feat': teacher_pose if pose_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if pose_active else zero_mask
                }
            retval['training_feat']['distill_valid_ratio'] = valid_ratio
        return retval
