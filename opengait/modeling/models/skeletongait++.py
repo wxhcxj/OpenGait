@@ -43,7 +43,7 @@ class SkeletonGaitPP(BaseModel):
        self.distill_cfg = self.cfgs.get('distill_cfg', {})
        self.distill_enable = bool(self.distill_cfg.get('enable', False))
        self.teacher_global_dim = int(self.distill_cfg.get('teacher_global_dim', 102))
-        # selectable terms: global (T_global), motion (T_motion), pose (T_pose3d)
+        # selectable terms: global (T_global), motion (T_motion), pose (T_pose3d), rel (relation on T_global)
        raw_terms = set(self.distill_cfg.get('use_terms', ['global']))
        self.distill_terms = set(['global' if t == 'feat' else t for t in raw_terms])
        if 'feat' in raw_terms:
@@ -64,10 +64,11 @@ class SkeletonGaitPP(BaseModel):
            'global': global_prefix,
            'motion': 'distill_motion' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_motion' for cfg in loss_cfg) else None,
            'pose': 'distill_pose' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_pose' for cfg in loss_cfg) else None,
+           'rel': 'distill_rel' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_rel' for cfg in loss_cfg) else None,
        }
        self.use_any_distill = self.distill_enable and any(
            term in self.distill_terms and self.distill_loss_prefix.get(term, None) is not None
-           for term in ['global', 'motion', 'pose']
+           for term in ['global', 'motion', 'pose', 'rel']
        )
        if self.distill_enable and (not self.use_any_distill):
            self.msg_mgr.log_warning(
@@ -247,6 +248,13 @@ class SkeletonGaitPP(BaseModel):
                    'student_feat': student_global,
                    'teacher_feat': teacher_pose if pose_active else torch.zeros_like(student_global),
                    'mask': teacher_mask if pose_active else zero_mask
+               }
+           if self.distill_loss_prefix.get('rel', None) is not None:
+               rel_active = 'rel' in self.distill_terms
+               retval['training_feat'][self.distill_loss_prefix['rel']] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_global if rel_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if rel_active else zero_mask
                }
            retval['training_feat']['distill_valid_ratio'] = valid_ratio
        return retval

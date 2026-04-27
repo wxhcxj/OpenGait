@@ -19,7 +19,7 @@ data_cfg:
 distill_cfg:
   enable: true
   teacher_source: robustcap_cache
-  use_terms: [global, motion, pose]  # selectable: global / motion / pose
+  use_terms: [global, motion, pose, rel]  # selectable: global / motion / pose / rel
   teacher_global_dim: 102
   strict_teacher: false      # set true to raise error when a batch has no valid teacher cache
   lambda_feat: 1.0
@@ -67,6 +67,11 @@ loss_cfg:
     mode: mse
     normalize: true
     log_prefix: distill_pose
+  - loss_term_weight: 1.0
+    type: RelationDistillLoss
+    mode: mse
+    normalize: true
+    log_prefix: distill_rel
 
 model_cfg:
   model: SkeletonGaitPP
