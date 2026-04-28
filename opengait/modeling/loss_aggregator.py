@@ -62,6 +62,14 @@ class LossAggregator(nn.Module):
         for k, v in training_feats.items():
             if k in self.losses:
                 loss_func = self.losses[k]
+                if v is None:
+                    get_msg_mgr().log_debug(
+                        "Skip loss key %s because the value is None." % k)
+                    continue
+                if isinstance(v, dict) and ('enabled' in v) and (not v['enabled']):
+                    get_msg_mgr().log_debug(
+                        "Skip loss key %s because enabled=False." % k)
+                    continue
                 loss, info = loss_func(**v)
                 for name, value in info.items():
                     loss_info['scalar/%s/%s' % (k, name)] = value
@@ -70,15 +78,26 @@ class LossAggregator(nn.Module):
 
             else:
                 if isinstance(v, dict):
+                    if ('loss' in v) and is_tensor(v['loss']):
+                        _ = v['loss'].mean()
+                        loss_info['scalar/%s' % k] = _
+                        loss_sum += _
+                        get_msg_mgr().log_debug(
+                            "The key %s is not in loss_cfg but contains a tensor loss; added directly." % k)
+                        continue
                     raise ValueError(
                         "The key %s in -Trainng-Feat- should be stated in your loss_cfg as log_prefix."%k
                     )
                 elif is_tensor(v):
                     _ = v.mean()
                     loss_info['scalar/%s' % k] = _
-                    loss_sum += _
-                    get_msg_mgr().log_debug(
-                        "Please check whether %s needed in training." % k)
+                    if k.endswith('_ratio'):
+                        get_msg_mgr().log_debug(
+                            "Skip adding metric key %s into loss_sum." % k)
+                    else:
+                        loss_sum += _
+                        get_msg_mgr().log_debug(
+                            "Please check whether %s needed in training." % k)
                 else:
                     raise ValueError(
                         "Error type for -Trainng-Feat-, supported: A feature dict or loss tensor.")

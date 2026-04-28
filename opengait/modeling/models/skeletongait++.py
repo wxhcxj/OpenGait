@@ -40,8 +40,90 @@ class SkeletonGaitPP(BaseModel):
        self.FCs = SeparateFCs(16, 256*C, 128*C)
        self.BNNecks = SeparateBNNecks(16, 128*C, class_num=model_cfg['SeparateBNNecks']['class_num'])
 
+       self.distill_cfg = self.cfgs.get('distill_cfg', {})
+       self.distill_enable = bool(self.distill_cfg.get('enable', False))
+       self.teacher_global_dim = int(self.distill_cfg.get('teacher_global_dim', 102))
+        # selectable terms: global (T_global), motion (T_motion), pose (T_pose3d), rel (relation on T_global)
+       raw_terms = set(self.distill_cfg.get('use_terms', ['global']))
+       self.distill_terms = set(['global' if t == 'feat' else t for t in raw_terms])
+       if 'feat' in raw_terms:
+           self.msg_mgr.log_warning(
+               "distill_cfg.use_terms contains deprecated term 'feat'; "
+               "please rename it to 'global'.")
+       self.strict_teacher = bool(self.distill_cfg.get('strict_teacher', False))
+       self._distill_warned = False
+       loss_cfg = self.cfgs.get('loss_cfg', [])
+       if isinstance(loss_cfg, dict):
+           loss_cfg = [loss_cfg]
+       global_prefix = None
+       if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_global' for cfg in loss_cfg):
+           global_prefix = 'distill_global'
+       elif any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_feat' for cfg in loss_cfg):
+           global_prefix = 'distill_feat'
+       self.distill_loss_prefix = {
+           'global': global_prefix,
+           'motion': 'distill_motion' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_motion' for cfg in loss_cfg) else None,
+           'pose': 'distill_pose' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_pose' for cfg in loss_cfg) else None,
+           'rel': 'distill_rel' if any(isinstance(cfg, dict) and cfg.get('log_prefix', None) == 'distill_rel' for cfg in loss_cfg) else None,
+       }
+       self.use_any_distill = self.distill_enable and any(
+           term in self.distill_terms and self.distill_loss_prefix.get(term, None) is not None
+           for term in ['global', 'motion', 'pose', 'rel']
+       )
+       if self.distill_enable and (not self.use_any_distill):
+           self.msg_mgr.log_warning(
+               "distill_cfg.enable=True but no active distill term is both selected and registered in loss_cfg. "
+               "selected use_terms={}, registered={}".format(
+                   sorted(list(self.distill_terms)), self.distill_loss_prefix))
+       if self.use_any_distill:
+           self.distill_proj = nn.Linear(128 * C * 16, self.teacher_global_dim)
+
        self.TP = PackSequenceWrapper(torch.max)
        self.HPP = HorizontalPoolingPyramid(bin_num=[16])
+
+   def _load_teacher_global(self, batch_size, device):
+       teacher_feat = torch.zeros(batch_size, self.teacher_global_dim, device=device, dtype=torch.float32)
+       teacher_motion = torch.zeros(batch_size, self.teacher_global_dim, device=device, dtype=torch.float32)
+       teacher_pose = torch.zeros(batch_size, self.teacher_global_dim, device=device, dtype=torch.float32)
+       teacher_mask = torch.zeros(batch_size, device=device, dtype=torch.float32)
+
+       extras = getattr(self, 'batch_extras', [])
+       if len(extras) == 0:
+           return teacher_feat, teacher_motion, teacher_pose, teacher_mask
+       extra = extras[0]
+       if not isinstance(extra, dict):
+           return teacher_feat, teacher_motion, teacher_pose, teacher_mask
+       paths = extra.get('teacher_cache_paths', None)
+       if paths is None:
+           return teacher_feat, teacher_motion, teacher_pose, teacher_mask
+
+       def summary_vec(arr):
+           arr = np.asarray(arr, dtype=np.float32)
+           if arr.ndim < 2:
+               return None
+           t_mean = arr.mean(axis=0).reshape(-1)
+           t_std = arr.std(axis=0).reshape(-1)
+           vec = np.concatenate([t_mean, t_std], axis=0).astype(np.float32)
+           return vec if vec.shape[0] == self.teacher_global_dim else None
+
+       for i, pth in enumerate(paths):
+           if i >= batch_size or pth is None:
+               continue
+           try:
+               data = np.load(pth, allow_pickle=True)
+               t_global = np.asarray(data['T_global'], dtype=np.float32).reshape(-1)
+               t_motion = summary_vec(data['T_motion']) if 'T_motion' in data else None
+               t_pose = summary_vec(data['T_pose3d']) if 'T_pose3d' in data else None
+               if t_global.shape[0] == self.teacher_global_dim:
+                   teacher_feat[i] = torch.from_numpy(t_global).to(device=device)
+                   if t_motion is not None:
+                       teacher_motion[i] = torch.from_numpy(t_motion).to(device=device)
+                   if t_pose is not None:
+                       teacher_pose[i] = torch.from_numpy(t_pose).to(device=device)
+                   teacher_mask[i] = 1.0
+           except Exception:
+               continue
+       return teacher_feat, teacher_motion, teacher_pose, teacher_mask
 
    def make_layer(self, block, planes, stride, blocks_num, mode='2d'):
 
@@ -79,7 +161,7 @@ class SkeletonGaitPP(BaseModel):
                pose = pose[..., cutting:-cutting]
            cat_data = np.concatenate([pose, sil], axis=1) # [T, 3, H, W]
            new_data_list.append(cat_data)
-       new_inputs = [[new_data_list], inputs[1], inputs[2], inputs[3], inputs[4]]
+       new_inputs = [[new_data_list], inputs[1], inputs[2], inputs[3], inputs[4], *inputs[5:]]
        return super().inputs_pretreament(new_inputs)
 
    def forward(self, inputs):
@@ -130,6 +212,51 @@ class SkeletonGaitPP(BaseModel):
                'embeddings': embed
            }
        }
+       if self.use_any_distill:
+           student_global = self.distill_proj(embed_1.reshape(n, -1))
+           teacher_global, teacher_motion, teacher_pose, teacher_mask = self._load_teacher_global(n, student_global.device)
+           valid_ratio = teacher_mask.mean()
+           if self.training and valid_ratio.item() <= 0:
+               if self.strict_teacher:
+                   raise RuntimeError(
+                       "No valid teacher features in current batch (distill_valid_ratio=0). "
+                       "Please check teacher_index keys and teacher_cache_root."
+                   )
+               if not self._distill_warned:
+                   self.msg_mgr.log_warning(
+                       "distill_valid_ratio is 0 in current batch. distill loss will be 0. "
+                       "Please verify teacher_index key format and cache paths.")
+                   self._distill_warned = True
+           zero_mask = torch.zeros_like(teacher_mask)
+           if self.distill_loss_prefix.get('global', None) is not None:
+               global_active = 'global' in self.distill_terms
+               retval['training_feat'][self.distill_loss_prefix['global']] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_global if global_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if global_active else zero_mask
+               }
+           if self.distill_loss_prefix.get('motion', None) is not None:
+               motion_active = 'motion' in self.distill_terms
+               retval['training_feat'][self.distill_loss_prefix['motion']] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_motion if motion_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if motion_active else zero_mask
+               }
+           if self.distill_loss_prefix.get('pose', None) is not None:
+               pose_active = 'pose' in self.distill_terms
+               retval['training_feat'][self.distill_loss_prefix['pose']] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_pose if pose_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if pose_active else zero_mask
+               }
+           if self.distill_loss_prefix.get('rel', None) is not None:
+               rel_active = 'rel' in self.distill_terms
+               retval['training_feat'][self.distill_loss_prefix['rel']] = {
+                   'student_feat': student_global,
+                   'teacher_feat': teacher_global if rel_active else torch.zeros_like(student_global),
+                   'mask': teacher_mask if rel_active else zero_mask
+               }
+           retval['training_feat']['distill_valid_ratio'] = valid_ratio
        return retval
 
 class AttentionFusion(nn.Module): 
